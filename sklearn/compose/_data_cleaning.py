@@ -2,7 +2,8 @@ import warnings
 
 import numpy as np
 
-from ..base import BaseEstimator, clone
+from ..base import clone
+from ..utils.metaestimators import _BaseComposition
 from ..utils.validation import check_is_fitted
 from ..utils import check_array
 from ..preprocessing import FunctionTransformer
@@ -10,7 +11,7 @@ from ..preprocessing import FunctionTransformer
 __all__ = ['CleanDataEstimator']
 
 
-class CleanDataEstimator(BaseEstimator):
+class CleanDataEstimator(_BaseComposition):
     """Meta-estimator to fit on clean data.
 
     Useful for validating data cleansing steaps.
@@ -35,37 +36,34 @@ class CleanDataEstimator(BaseEstimator):
     func : function, optional
         Function that returns zeroes on "dirty"/unwanted datapoints based
         on X and/or y.
-        If ``func`` is ``None``, the function used will return all indices.
+        If ``func`` is ``None``, the used function will return all ones.
 
     Attributes
     ----------
     estimator_ : object
         Fitted estimator.
 
-    cleaner_ : object
-        Transformer used for cleaning in ``fit``.
-
     Examples
     --------
     >>> import numpy as np
     >>> from sklearn.linear_model import LogisticRegression
     >>> from sklearn.compose import CleanDataEstimator
-    >>> clean_clf = CleanDataEstimator(estimator=LogisticRegression(),
-    ...                                func=lambda X, y: 1)
-    >>> X = np.arange(4).reshape(-1, 1)
-    >>> y = np.exp(2 * X).ravel()
-    >>> tt.fit(X, y)
-    TransformedTargetRegressor(...)
-    >>> tt.score(X, y)
-    1.0
-    >>> tt.regressor_.coef_
-    array([2.])
+    >>> # Consider all data-points as clean.
+    >>> clean_clf = CleanDataEstimator()
+    >>> X = np.random.randn(100, 2)
+    >>> X[50:] += 5
+    >>> y = np.concatenate([np.zeros(50), np.ones(50)])
+    >>> clean_clf.fit(X, y)
+    CleanDataEstimator(...)
+    >>> # Test on "trivial" test data.
+    >>> assert (clean_clf.predict(np.zeros((10, 2))) == np.zeros(10)).all()
+    >>> assert (clean_clf.predict(5 * np.ones((10, 2))) == np.ones(10)).all()
 
     """
-    def __init__(self, regressor=None, transformer=None,
-                 func=None, inverse_func=None, check_inverse=True):
-        self.regressor = regressor
-        self.func = func
+    def __init__(self, estimator=None, func=None):
+        self.estimator = estimator
+        # If func is None, consider all data-points.
+        self.func = func or (lambda X, y: np.ones_like(y))
 
     def fit(self, X, y, **fit_params):
         """Fit the model according to the given training data.
@@ -81,7 +79,7 @@ class CleanDataEstimator(BaseEstimator):
 
         **fit_params : dict of string -> object
             Parameters passed to the ``fit`` method of the underlying
-            regressor.
+            estimator.
 
 
         Returns
@@ -91,13 +89,13 @@ class CleanDataEstimator(BaseEstimator):
         y = check_array(y, accept_sparse=False, force_all_finite=True,
                         ensure_2d=False, dtype='numeric')
 
-        if self.regressor is None:
-            from ..linear_model import LinearRegression
-            self.regressor_ = LinearRegression()
+        if self.estimator is None:
+            from ..linear_model import LogisticRegression
+            self.estimator_ = LogisticRegression()
         else:
-            self.regressor_ = clone(self.regressor)
+            self.estimator_ = clone(self.estimator)
 
-        clean_idx = np.nonzero(self.func_(X, y))
+        clean_idx = np.nonzero(self.func(X, y))
         X_clean = X[clean_idx]
         y_clean = y[clean_idx]
         self.estimator_.fit(X_clean, y_clean, **fit_params)
@@ -105,10 +103,7 @@ class CleanDataEstimator(BaseEstimator):
         return self
 
     def predict(self, X):
-        """Predict using the base regressor, applying inverse.
-
-        The regressor is used to predict and the ``inverse_func`` or
-        ``inverse_transform`` is applied before returning the prediction.
+        """Predict using the base estimator.
 
         Parameters
         ----------
@@ -122,17 +117,10 @@ class CleanDataEstimator(BaseEstimator):
 
         """
         check_is_fitted(self)
-        pred = self.regressor_.predict(X)
-        if pred.ndim == 1:
-            pred_trans = self.transformer_.inverse_transform(
-                pred.reshape(-1, 1))
-        else:
-            pred_trans = self.transformer_.inverse_transform(pred)
-        if (self._training_dim == 1 and
-                pred_trans.ndim == 2 and pred_trans.shape[1] == 1):
-            pred_trans = pred_trans.squeeze(axis=1)
+        pred = self.estimator_.predict(X)
 
-        return pred_trans
+        return pred
 
     def _more_tags(self):
         return {'poor_score': True, 'no_validation': True}
+
